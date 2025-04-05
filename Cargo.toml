@@ -2,6 +2,15 @@
 name = "scout"
 version = "0.1.0"
 edition = "2024"
+authors = ["Gebz <gebz97@proton.me>"]
+license = "GNU Lesser General Public License (LGPLv3)"
+repository = "https://github.com/gebz97/scout.git"
+keywords = ["Linux", "procfs", "sysfs", "linux-monitoring"]
+readme = "README.md"
+
+[[bin]]
+name = "tests"
+path = "src/tests.rs"
 
 [dependencies]
 #nix = { version = "0.29.0", features = ["acct", "aio", "dir", "env", "event", "fanotify", "feature", "fs", "hostname", "inotify", "ioctl", "kmod", "mman", "mount", "mqueue", "net", "personality", "pin-utils", "poll", "process", "ptrace", "quota", "reboot", "resource", "sched", "signal", "socket", "term", "time", "ucontext", "uio", "user", "zerocopy"] }
