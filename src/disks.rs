@@ -1,178 +1,350 @@
-use std::collections::HashMap;
-use std::fs;
-use std::io::{self, BufRead};
-use nix::sys::statvfs::statvfs;
+use std::fs::{self, File};
+use std::io::{self, Read, Seek, SeekFrom};
+use std::path::Path;
 use serde::{Serialize, Deserialize};
-use thiserror::Error;
 
-const SECTOR_SIZE: u64 = 512;
-const VIRTUAL_FS: [&str; 6] = [
-    "sysfs", "proc", "tmpfs", "devtmpfs", "cgroup2", "pstore"
-];
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum DiskLabel {
+    GPT,
+    MBR,
+    Unknown,
+}
 
-#[derive(Debug, Error)]
-pub enum ScoutError {
-    #[error("Failed to read file: {0}")]
-    IOError(#[from] std::io::Error),
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Disk {
+    name: String,
+    uuid: String,
+    model: String,
+    disklabel_type: String,
+    size: u64,
+    sector_size: u64,
+    n_sectors: u64,
+    io_size: u32,
+    partitions: Vec<Partition>
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Partition {
+    name: String,
+    start: u64,
+    end: u64,
+    sectors: u64,
+    size: u64,
+    uuid: String,
+    part_type: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Mount {
+    filesystem: String,
+    mount_point: String,
+    mount_type: String,
+    mount_options: Vec<String>,
+    size: u64,
+    free: u64,
+    used: u64
+}
+
+impl DiskLabel {
+    pub fn to_string(&self) -> String {
+        match self {
+            Self::GPT => String::from("GPT"),
+            Self::MBR => String::from("MBR"),
+            Self::Unknown => String::from("Unknown")
+        }
+    }
+}
+
+impl Partition {
+    pub fn new(device: &str, part: &str) -> io::Result<Self> {
+        let partition_path = Path::new("/sys/block").join(device).join(part);
+
+        if !partition_path.is_dir() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "Partition not found"));
+        }
+
+        let uuid = match get_uuid_from_dir("/dev/disk/by-uuid", part) {
+            Ok(Some(uuid)) => uuid,
+            Ok(None) => {
+                format!("UUID not found for partition: {}", part)
+            }
+            Err(e) => format!("Error while parsing the UUID for {}: {}", part, e)
+        };        
+        
+        let part_type = get_partition_type(&part)
+            .expect(&format!("Unable to get partition type {}", part))
+            .unwrap_or("Unknown partition type.".to_string());
+
+        let (sectors, start, end) = get_partition_sectors(device, part)
+            .expect(&format!("Unable to get sector info: {}", part));
+
+        let size = sectors * get_sector_size(&device)
+            .expect(&format!("Unable to get device size {}", part));
+
+        Ok(Partition {
+            name: part.to_string(),
+            start,
+            end,
+            sectors,
+            size,
+            uuid,
+            part_type,
+        })
+    }
+}
+
+impl Disk {
+    pub fn new(device: &str) -> io::Result<Self> {
+        let device_path = Path::new("/sys/block").join(device);
+
+        if !device_path.is_dir() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, "Device not found"));
+        }
+
+        let uuid = get_device_uuid(device)
+            .expect(&format!("Unable to get device UUID {}", &device));
+
+        let model = get_device_model(device)
+            .expect(&format!("Unable to get device model {}", &device));
+
+        let disklabel_type = detect_disklabel(device)
+            .expect(&format!("Unable to get disk label type {}", &device)).to_string();
+
+        let size = read_capacity(device)
+            .expect(&format!("Unable to get capacity {}", &device));
+
+        let sector_size = get_sector_size(device)
+            .expect(&format!("Unable to get sector size {}", &device));
+
+        let n_sectors = size / sector_size as u64;
+        let io_size = get_io_size(device)
+            .expect(&format!("Unable to get io size {}", &device));
+
+        let partitions = get_partitions(device)
+            .into_iter()
+            .filter(|part| !part.contains("loop"))
+            .map(|part| Partition::new(device, &part))
+            .collect::<io::Result<Vec<Partition>>>()
+            .expect(&format!("Unable to get partitions {}", &device));
+
+        Ok(Disk {
+            name: device.to_string(),
+            uuid,
+            model,
+            disklabel_type,
+            size,
+            sector_size,
+            n_sectors,
+            io_size,
+            partitions,
+        })
+    }
+}
+
+
+pub fn get_block_devices() -> Vec<String> {
+    let mut block_devices = Vec::new();
     
-    #[error("Failed to parse integer: {0}")]
-    ParseIntError(#[from] std::num::ParseIntError),
+    // Read the contents of /sys/block
+    if let Ok(entries) = fs::read_dir("/sys/block") {
+        for entry in entries.flatten() {
+            let device_name = entry.file_name();
+
+            if !device_name.to_string_lossy().starts_with("loop") {
+                let device_path = format!("{}", device_name.to_string_lossy());
+                block_devices.push(device_path);
+            }
+        }
+    }
+    
+    block_devices
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IoStats {
-    pub reads_completed: u64,
-    pub sectors_read: u64,
-    pub writes_completed: u64,
-    pub sectors_written: u64,
+pub fn get_partitions(device_name: &str) -> Vec<String> {
+    let device_path = Path::new("/sys/block").join(device_name);
+
+    if !device_path.is_dir() {
+        return Vec::new();
+    }
+
+    let mut partitions = Vec::new();
+
+    if let Ok(entries) = fs::read_dir(device_path) {
+        for entry in entries.flatten() {
+            let partition_name = entry.file_name();
+
+            if partition_name != device_name 
+                && partition_name.to_string_lossy().starts_with(device_name) {
+                let partition_path = format!("{}", partition_name.to_string_lossy());
+                partitions.push(partition_path);
+            }
+        }
+    }
+
+    partitions
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MountUsage {
-    pub mount_point: String,
-    pub total_space: u64,
-    pub used_space: u64,
-    pub free_space: u64,
+pub fn detect_disklabel(device: &str) -> io::Result<DiskLabel> {
+    let path = format!("/dev/{}", device);
+    let mut file = File::open(&path).expect(&format!("Unable to open file: {}", path));
+
+    let mut mbr = [0u8; 512];
+    file.read_exact(&mut mbr).expect(&format!("Unable to read Disk data from: {}", path));
+
+    if mbr[510] != 0x55 || mbr[511] != 0xAA {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid MBR signature"));
+    }
+
+    let part_type = mbr[450];
+    if part_type == 0xEE {
+        file.seek(SeekFrom::Start(512))
+            .expect(&format!("Unable to do direct seek on mbr for: {}", &device));
+
+        let mut gpt = [0u8; 8];
+
+        file.read_exact(&mut gpt)
+            .expect(&format!("Unable to read exact bytes from: {}", &device));
+        if &gpt == b"EFI PART" {
+            return Ok(DiskLabel::GPT);
+        }
+    }
+    Ok(DiskLabel::MBR)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PartitionInfo {
-    pub name: String,
-    pub capacity: Option<u64>,
-    pub io_stats: Option<IoStats>,
-    pub mount_usage: Option<MountUsage>,
+pub fn get_sector_size(device: &str) -> io::Result<u64> {
+    let path = format!("/sys/block/{}/queue/logical_block_size", device);
+    let size_str = fs::read_to_string(&path)
+        .expect(&format!("Unable to read file content: {}", &path));
+
+    size_str.trim().parse().map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("Invalid sector size: {}", e))
+    })
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct DiskInfo {
-    pub name: String,
-    pub capacity: Option<u64>,
-    pub io_stats: Option<IoStats>,
-    pub partitions: Vec<PartitionInfo>,
+pub fn read_capacity(device: &str) -> io::Result<u64> {
+    let sector_size = get_sector_size(device).unwrap_or(512);
+    let path = format!("/sys/class/block/{}/size", device);
+    
+    let size_str = fs::read_to_string(path)
+        .expect(&format!("Unable to open path: {}", &device));
+
+    let capacity_in_sectors = size_str.trim().parse::<u64>().map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("Invalid capacity: {}", e))
+    }).expect(&format!("Unable to parse capacity for {}", &device));
+
+    Ok(capacity_in_sectors * sector_size)
 }
 
-/// Reads disk capacity from `/sys/class/block/{device}/size`
-pub fn read_capacity(device: &str) -> Option<u64> {
-    let sys_path = format!("/sys/class/block/{}/size", device);
-    fs::read_to_string(sys_path)
-        .ok()?
+pub fn get_device_model(device: &str) -> io::Result<String> {
+    let path = format!("/sys/block/{}/device/model", device);
+    let model = fs::read_to_string(&path)
+        .expect(&format!("Unable to read contents of: {}", &path));
+
+    Ok(model.trim().to_string())
+}
+
+pub fn get_uuid_from_dir(path: &str, device: &str) -> io::Result<Option<String>> {
+    if Path::new(path).exists() {
+        for entry_result in fs::read_dir(path)
+            .expect(&format!("Unable to read UUID Path: {}", &path)) {
+
+            let entry = entry_result
+                .expect(&format!("No entry found for UUID Link Lookup: {}", &path));
+
+            let target = fs::read_link(entry.path())
+                .expect(&format!("Unable to read link: {}", &path));
+
+            if target.to_string_lossy().contains(device) {
+                if let Some(uuid) = entry.file_name().to_str() {
+                    return Ok(Some(uuid.to_string()));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+
+pub fn get_device_uuid(device: &str) -> io::Result<String> {
+    if let Some(uuid) = get_uuid_from_dir("/dev/disk/by-id", device)
+        .expect(&format!("Unable to get disk UUID: {}", &device)) {
+        if let Some(id) = uuid.split('-').last() {
+            return Ok(id.to_string());
+        }
+    }
+
+    if let Some(uuid) = get_uuid_from_dir("/dev/disk/by-uuid", device)
+        .expect(&format!("Unable to get device UUID {}", &device)) {
+        return Ok(uuid);
+    }
+
+    Err(io::Error::new(io::ErrorKind::NotFound, "UUID not found"))
+}
+
+pub fn get_io_size(device: &str) -> io::Result<u32> {
+    let path = format!("/sys/block/{}/queue/optimal_io_size", device);
+    let io_size_str = fs::read_to_string(&path)
+        .expect(&format!("Unable to read contents of: {}", &path));
+
+    io_size_str.trim().parse().map_err(|e| {
+        io::Error::new(io::ErrorKind::InvalidData, format!("Invalid IO size: {}", e))
+    })
+}
+
+pub fn get_partition_sectors(device: &str, partition: &str) -> io::Result<(u64, u64, u64)> {
+    let partition_path = Path::new("/sys/block").join(device).join(partition);
+
+    if !partition_path.is_dir() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "Partition not found"));
+    }
+
+    let start = fs::read_to_string(partition_path.join("start"))
+        .expect(&format!("Unable to get partition sectors for: {}", &partition))
         .trim()
         .parse::<u64>()
-        .map(|sectors| sectors * SECTOR_SIZE)
-        .ok()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData,
+            format!("Invalid start sector: {}", e)))
+        .expect(&format!("Unable to fetch sector start: {}", &partition));
+    
+    let size = fs::read_to_string(partition_path.join("size"))
+        .expect(&format!("Unable to get sector size for: {}", &partition))
+        .trim()
+        .parse::<u64>()
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData,
+            format!("Invalid size: {}", e)))
+        .expect(&format!("Unable to fetch sector size: {}", &partition));
+
+    let end = start + size - 1;
+    
+    let sectors = size;
+
+    Ok((sectors, start, end))
 }
 
-/// Parses `/proc/diskstats` to extract I/O statistics
-pub fn parse_diskstats_raw() -> Result<HashMap<String, IoStats>, ScoutError> {
-    let file = fs::File::open("/proc/diskstats")?;
-    let reader = io::BufReader::new(file);
-    let mut stats_map = HashMap::new();
-
-    for line in reader.lines() {
-        let line = line?;
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 14 || parts[2].starts_with("loop") {
-            continue;
-        }
-
-        let io_stats = IoStats {
-            reads_completed: parts[3].parse().unwrap_or(0),
-            sectors_read: parts[5].parse().unwrap_or(0),
-            writes_completed: parts[7].parse().unwrap_or(0),
-            sectors_written: parts[9].parse().unwrap_or(0),
-        };
-        stats_map.insert(parts[2].to_string(), io_stats);
+pub fn get_partition_type(device: &str) -> io::Result<Option<String>> {
+    let partition_path = format!("/sys/class/block/{}/partition", device);
+    
+    if !Path::new(&partition_path).exists() {
+        return Err(io::Error::new(io::ErrorKind::NotFound, "Partition path not found"));
     }
-    Ok(stats_map)
-}
+    
+    let mut file = match fs::File::open(&partition_path) {
+        Ok(f) => f,
+        Err(e) => return Err(io::Error::new(io::ErrorKind::NotFound,
+            format!("Failed to open partition file: {}", e))),
+    };
 
-/// Parses `/proc/mounts` to get disk usage statistics
-pub fn parse_mounts_usage() -> Result<HashMap<String, MountUsage>, ScoutError> {
-    let file = fs::File::open("/proc/mounts")?;
-    let reader = io::BufReader::new(file);
-    let mut mount_map = HashMap::new();
-
-    for line in reader.lines() {
-        let line = line?;
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 4 || parts[0].starts_with("/dev/loop") || VIRTUAL_FS.contains(&parts[2]) {
-            continue;
-        }
-
-        if let Ok(vfs) = statvfs(parts[1]) {
-            let block_size = vfs.fragment_size() as u64;
-            let total = vfs.blocks() * block_size;
-            let available = vfs.blocks_available() * block_size;
-            let used = total - (vfs.blocks_free() * block_size);
-
-            mount_map.insert(
-                parts[0].to_string(),
-                MountUsage {
-                    mount_point: parts[1].to_string(),
-                    total_space: total,
-                    used_space: used,
-                    free_space: available,
-                },
-            );
-        }
+    let mut buffer = String::new();
+    
+    match file.read_to_string(&mut buffer) {
+        Ok(_) => (),
+        Err(e) => return Err(io::Error::new(io::ErrorKind::Other, 
+            format!("Failed to read partition file: {}", e))),
     }
-    Ok(mount_map)
-}
 
-/// Determines if a device is a partition
-pub fn is_partition(device: &str) -> bool {
-    if device.starts_with("loop") {
-        return false;
+    if buffer.is_empty() {
+        Err(io::Error::new(io::ErrorKind::Other, "Partition type is empty or unreadable"))
+    } else {
+        Ok(Some(buffer.trim().to_string()))
     }
-    if device.starts_with("nvme") {
-        return device.rsplit('p').next().and_then(|s| s.parse::<u32>().ok()).is_some();
-    }
-    device.len() > 3 && device.chars().last().unwrap().is_ascii_digit()
-}
-
-/// Extracts the parent disk name from a partition
-pub fn parent_disk(device: &str) -> String {
-    if device.starts_with("nvme") {
-        if let Some(pos) = device.rfind('p') {
-            return device[..pos].to_string();
-        }
-    }
-    device.trim_end_matches(|c: char| c.is_ascii_digit()).to_string()
-}
-
-/// Parses all disk information and returns it as a HashMap
-pub fn get_disks() -> Result<HashMap<String, DiskInfo>, ScoutError> {
-    let diskstats = parse_diskstats_raw()?;
-    let mount_usage = parse_mounts_usage()?;
-    let mut disks = HashMap::new();
-
-    for (device, io_stats) in diskstats {
-        if is_partition(&device) {
-            let parent = parent_disk(&device);
-            disks.entry(parent.clone())
-                .or_insert_with(|| DiskInfo {
-                    name: parent.clone(),
-                    capacity: read_capacity(&parent),
-                    io_stats: None,
-                    partitions: Vec::new(),
-                })
-                .partitions.push(PartitionInfo {
-                    name: device.clone(),
-                    capacity: read_capacity(&device),
-                    io_stats: Some(io_stats),
-                    mount_usage: mount_usage.get(&format!("/dev/{}", device)).cloned(),
-                });
-        } else {
-            disks.insert(
-                device.clone(),
-                DiskInfo {
-                    name: device.clone(),
-                    capacity: read_capacity(&device),
-                    io_stats: Some(io_stats),
-                    partitions: Vec::new(),
-                },
-            );
-        }
-    }
-    Ok(disks)
 }
