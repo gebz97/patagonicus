@@ -1,4 +1,4 @@
-use scout::units;
+use linux_scout::units;
 
 fn main() {
     let max_int = u64::MAX;

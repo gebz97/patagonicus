@@ -1,5 +1,5 @@
 [package]
-name = "scout"
+name = "linux_scout"
 version = "0.1.0"
 edition = "2024"
 authors = ["Gebz <gebz97@proton.me>"]
