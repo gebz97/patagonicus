@@ -33,16 +33,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c19937216e9d3aa9956d9bb8dfc0b0c8beb6058fc4f7a4dc4d850edf86a237d6"
 
 [[package]]
-name = "linux_scout"
-version = "0.1.1"
-dependencies = [
- "nix",
- "serde",
- "serde_json",
- "thiserror",
-]
-
-[[package]]
 name = "memchr"
 version = "2.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -58,6 +48,16 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+]
+
+[[package]]
+name = "patagonicus"
+version = "0.1.1"
+dependencies = [
+ "nix",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
