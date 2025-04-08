@@ -1,9 +1,9 @@
 [package]
 name = "patagonicus"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 authors = ["Gebz <gebz97@proton.me>"]
-description = "A toolbox for fetching relevant linux information"
+description = "Relevant Linux System Information in a nice and user-friendly format"
 license = "LGPL-3.0-only"
 repository = "https://github.com/gebz97/scout.git"
 keywords = ["Linux", "procfs", "sysfs", "linux-monitoring"]
