@@ -34,17 +34,6 @@ pub struct Partition {
     part_type: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct Mount {
-    filesystem: String,
-    mount_point: String,
-    mount_type: String,
-    mount_options: Vec<String>,
-    size: u64,
-    free: u64,
-    used: u64
-}
-
 impl DiskLabel {
     pub fn to_string(&self) -> String {
         match self {
@@ -60,7 +49,9 @@ impl Partition {
         let partition_path = Path::new("/sys/block").join(device).join(part);
 
         if !partition_path.is_dir() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "Partition not found"));
+            return Err(
+                io::Error::new(io::ErrorKind::NotFound,"Partition not found"
+            ));
         }
 
         let uuid = match get_uuid_from_dir("/dev/disk/by-uuid", part) {
@@ -98,7 +89,9 @@ impl Disk {
         let device_path = Path::new("/sys/block").join(device);
 
         if !device_path.is_dir() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, "Device not found"));
+            return Err(
+                io::Error::new(io::ErrorKind::NotFound, "Device not found"
+            ));
         }
 
         let uuid = get_device_uuid(device)
@@ -108,7 +101,8 @@ impl Disk {
             .expect(&format!("Unable to get device model {}", &device));
 
         let disklabel_type = detect_disklabel(device)
-            .expect(&format!("Unable to get disk label type {}", &device)).to_string();
+            .expect(&format!("Unable to get disk label type {}", &device))
+            .to_string();
 
         let size = read_capacity(device)
             .expect(&format!("Unable to get capacity {}", &device));
@@ -175,7 +169,8 @@ pub fn get_partitions(device_name: &str) -> Vec<String> {
 
             if partition_name != device_name 
                 && partition_name.to_string_lossy().starts_with(device_name) {
-                let partition_path = format!("{}", partition_name.to_string_lossy());
+                let partition_path = format!("{}", 
+                    partition_name.to_string_lossy());
                 partitions.push(partition_path);
             }
         }
@@ -186,19 +181,27 @@ pub fn get_partitions(device_name: &str) -> Vec<String> {
 
 pub fn detect_disklabel(device: &str) -> io::Result<DiskLabel> {
     let path = format!("/dev/{}", device);
-    let mut file = File::open(&path).expect(&format!("Unable to open file: {}", path));
+    let mut file = File::open(&path)
+        .expect(&format!("Unable to open file: {}", path));
 
     let mut mbr = [0u8; 512];
-    file.read_exact(&mut mbr).expect(&format!("Unable to read Disk data from: {}", path));
+    file.read_exact(&mut mbr)
+        .expect(&format!("Unable to read Disk data from: {}", path));
 
     if mbr[510] != 0x55 || mbr[511] != 0xAA {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid MBR signature"));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Invalid MBR signature"
+        ));
     }
 
     let part_type = mbr[450];
     if part_type == 0xEE {
         file.seek(SeekFrom::Start(512))
-            .expect(&format!("Unable to do direct seek on mbr for: {}", &device));
+            .expect(&format!(
+                "Unable to do direct seek on mbr for: {}",
+                &device
+            ));
 
         let mut gpt = [0u8; 8];
 
@@ -217,7 +220,10 @@ pub fn get_sector_size(device: &str) -> io::Result<u64> {
         .expect(&format!("Unable to read file content: {}", &path));
 
     size_str.trim().parse().map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("Invalid sector size: {}", e))
+        io::Error::new(
+            io::ErrorKind::InvalidData, format!("Invalid sector size: {}",
+            e
+        ))
     })
 }
 
@@ -229,7 +235,9 @@ pub fn read_capacity(device: &str) -> io::Result<u64> {
         .expect(&format!("Unable to open path: {}", &device));
 
     let capacity_in_sectors = size_str.trim().parse::<u64>().map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("Invalid capacity: {}", e))
+        io::Error::new(
+            io::ErrorKind::InvalidData, format!("Invalid capacity: {}", e)
+        )
     }).expect(&format!("Unable to parse capacity for {}", &device));
 
     Ok(capacity_in_sectors * sector_size)
@@ -243,13 +251,17 @@ pub fn get_device_model(device: &str) -> io::Result<String> {
     Ok(model.trim().to_string())
 }
 
-pub fn get_uuid_from_dir(path: &str, device: &str) -> io::Result<Option<String>> {
+pub fn get_uuid_from_dir(
+        path: &str, device: &str
+    ) -> io::Result<Option<String>> {
     if Path::new(path).exists() {
         for entry_result in fs::read_dir(path)
             .expect(&format!("Unable to read UUID Path: {}", &path)) {
 
             let entry = entry_result
-                .expect(&format!("No entry found for UUID Link Lookup: {}", &path));
+                .expect(
+                    &format!("No entry found for UUID Link Lookup: {}", &path)
+                );
 
             let target = fs::read_link(entry.path())
                 .expect(&format!("Unable to read link: {}", &path));
@@ -287,15 +299,21 @@ pub fn get_io_size(device: &str) -> io::Result<u32> {
         .expect(&format!("Unable to read contents of: {}", &path));
 
     io_size_str.trim().parse().map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, format!("Invalid IO size: {}", e))
+        io::Error::new(
+            io::ErrorKind::InvalidData, format!("Invalid IO size: {}", e)
+        )
     })
 }
 
-pub fn get_partition_sectors(device: &str, partition: &str) -> io::Result<(u64, u64, u64)> {
+pub fn get_partition_sectors(
+        device: &str, partition: &str
+    ) -> io::Result<(u64, u64, u64)> {
     let partition_path = Path::new("/sys/block").join(device).join(partition);
 
     if !partition_path.is_dir() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, "Partition not found"));
+        return Err(
+            io::Error::new(io::ErrorKind::NotFound, "Partition not found")
+        );
     }
 
     let start = fs::read_to_string(partition_path.join("start"))
@@ -325,7 +343,9 @@ pub fn get_partition_type(device: &str) -> io::Result<Option<String>> {
     let partition_path = format!("/sys/class/block/{}/partition", device);
     
     if !Path::new(&partition_path).exists() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, "Partition path not found"));
+        return Err(
+            io::Error::new(io::ErrorKind::NotFound, "Partition path not found")
+        );
     }
     
     let mut file = match fs::File::open(&partition_path) {
@@ -343,7 +363,9 @@ pub fn get_partition_type(device: &str) -> io::Result<Option<String>> {
     }
 
     if buffer.is_empty() {
-        Err(io::Error::new(io::ErrorKind::Other, "Partition type is empty or unreadable"))
+        Err( io::Error::new(
+            io::ErrorKind::Other, "Partition type is empty or unreadable"
+        ))
     } else {
         Ok(Some(buffer.trim().to_string()))
     }
