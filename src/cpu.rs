@@ -101,7 +101,8 @@ impl Cpu {
         // Execute lscpu command
         let output = Command::new("lscpu")
             .arg("--bytes")  // Show sizes in bytes
-            .output()?;
+            .output()
+            .expect("lscpu command not found.");
         
         if !output.status.success() {
             return Err(Error::new(ErrorKind::Other, "Failed to execute lscpu"));
@@ -127,7 +128,6 @@ impl Cpu {
             .and_then(|s| s.parse().ok())
             .unwrap_or(1);
 
-        // Parse cache sizes
         let (l1, l2, l3) = parse_cache_sizes(&info);
         let flags = info.get("Flags")
             .map(|s| s.split_whitespace().map(String::from).collect())
