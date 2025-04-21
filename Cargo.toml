@@ -1,6 +1,6 @@
 [package]
 name = "patagonicus"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 authors = ["Gebz <gebz97@proton.me>"]
 description = "Relevant Linux System Information in a nice and user-friendly format"

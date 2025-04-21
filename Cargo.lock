@@ -52,7 +52,7 @@ dependencies = [
 
 [[package]]
 name = "patagonicus"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "nix",
  "serde",
